@@ -46,6 +46,27 @@ io.on('connection', (socket) => {
     users[userId] = socket.id;
     socket.userId = userId;
     console.log(`User ${userId} joined. Active users: ${Object.keys(users).length}`);
+    socket.on('message', (data) => {
+    try {
+      if (!data?.target || !data?.text || !data?.sender) {
+        throw new Error('Invalid message data');
+      }
+
+      const targetSocketId = users[data.target];
+      if (!targetSocketId) {
+        throw new Error(`Target user ${data.target} not found`);
+      }
+
+      io.to(targetSocketId).emit('message', {
+        sender: data.sender,
+        text: data.text,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error('Message error:', err.message);
+      socket.emit('message-error', err.message);
+    }
+  });
   });
 
   // Relay signaling data
