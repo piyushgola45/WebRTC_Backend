@@ -14,7 +14,7 @@ app.use(cors({
 
 const io = socketIo(server, {
   cors: {
-    origin: process.env.ALLOWED_ORIGINS || 'http://localhost:3000',
+    origin: '*',
     methods: ['GET', 'POST']
   },
   connectionStateRecovery: {
