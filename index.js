@@ -5,7 +5,11 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: ['https://webrtc-testing-t2az.onrender.com/'], // 👈 Replace with your Vercel domain
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 
 const server = http.createServer(app);
 const io = new Server(server, {
