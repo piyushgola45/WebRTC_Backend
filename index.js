@@ -6,9 +6,8 @@ const cors = require('cors');
 const app = express();
 const server = http.createServer(app);
 
-// Secure CORS configuration
 app.use(cors({
-  origin: '*', // Change for production
+  origin: '*', // Change to specific domain in production
   methods: ['GET', 'POST']
 }));
 
@@ -18,31 +17,26 @@ const io = socketIo(server, {
     methods: ['GET', 'POST']
   },
   connectionStateRecovery: {
-    maxDisconnectionDuration: 120000, // 2 minutes
+    maxDisconnectionDuration: 120000,
     skipMiddlewares: true
   }
 });
 
-// Store room participants
 const rooms = {};
 
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log(`🔌 User connected: ${socket.id}`);
 
-  // When a user joins a room
   socket.on('join-room', (roomId, userId) => {
-    if (!roomId || typeof roomId !== 'string' || !userId || typeof userId !== 'string') {
-      console.error('Invalid roomId or userId:', roomId, userId);
+    if (typeof roomId !== 'string' || typeof userId !== 'string') {
+      console.error('❌ Invalid roomId or userId');
       return socket.disconnect(true);
     }
 
-    // Join the room
     socket.join(roomId);
     socket.roomId = roomId;
-    console.log(socket.roomId);
     socket.userId = userId;
 
-    // Initialize room if it doesn't exist
     if (!rooms[roomId]) {
       rooms[roomId] = {
         participants: {},
@@ -50,109 +44,85 @@ io.on('connection', (socket) => {
       };
     }
 
-    // Add user to room
     rooms[roomId].participants[userId] = socket.id;
 
-    console.log(`User ${userId} joined room ${roomId}. Participants: ${Object.keys(rooms[roomId].participants).length}`);
-    
-    // Notify other users in the room about the new participant
+    console.log(`✅ ${userId} joined room ${roomId}. Total: ${Object.keys(rooms[roomId].participants).length}`);
+
     socket.to(roomId).emit('user-joined', userId);
-    
-    // Send room info to the new user
+
     socket.emit('room-info', {
       participants: Object.keys(rooms[roomId].participants).filter(id => id !== userId),
       messages: rooms[roomId].messages
     });
   });
 
-  // Handle signaling within a room
   socket.on('signal', ({ targetUserId, signal }) => {
     try {
-      if (!socket.roomId || !targetUserId || !signal) {
-        throw new Error('Invalid signaling data');
-      }
+      const { roomId, userId } = socket;
+      if (!roomId || !targetUserId || !signal) throw new Error('Missing data');
 
-      const room = rooms[socket.roomId];
-      if (!room) {
-        throw new Error('Room not found');
-      }
+      const room = rooms[roomId];
+      if (!room) throw new Error('Room not found');
 
       const targetSocketId = room.participants[targetUserId];
-      if (!targetSocketId) {
-        throw new Error('Target user not found in room');
-      }
+      if (!targetSocketId) throw new Error('Target not in room');
 
-      io.to(targetSocketId).emit('signal', {
-        senderId: socket.userId,
-        signal
-      });
+      io.to(targetSocketId).emit('signal', { senderId: userId, signal });
     } catch (err) {
-      console.error('Signaling error:', err.message);
+      console.error('❌ Signal error:', err.message);
       socket.emit('signal-error', err.message);
     }
   });
 
-  // Handle messages within a room
   socket.on('message', (text) => {
     try {
-      if (!socket.roomId || !text || typeof text !== 'string') {
-        throw new Error('Invalid message data');
-      }
+      const { roomId, userId } = socket;
+      if (!roomId || typeof text !== 'string' || !text.trim()) throw new Error('Invalid message');
 
-      const room = rooms[socket.roomId];
-      if (!room) {
-        throw new Error('Room not found');
-      }
+      const room = rooms[roomId];
+      if (!room) throw new Error('Room not found');
 
       const message = {
-        senderId: socket.userId,
-        text,
+        senderId: userId,
+        text: text.trim(),
         timestamp: new Date().toISOString()
       };
 
-      // Store message in room history
       room.messages.push(message);
-
-      // Broadcast to all room participants
-      io.to(socket.roomId).emit('message', message);
+      io.to(roomId).emit('message', message);
     } catch (err) {
-      console.error('Message error:', err.message);
+      console.error('❌ Message error:', err.message);
       socket.emit('message-error', err.message);
     }
   });
 
-  // Handle disconnection
   socket.on('disconnect', (reason) => {
-    if (socket.roomId && socket.userId && rooms[socket.roomId]) {
-      delete rooms[socket.roomId].participants[socket.userId];
-      console.log(`User ${socket.userId} disconnected from room ${socket.roomId}. Reason: ${reason}`);
-      
-      // Notify other users in the room
-      socket.to(socket.roomId).emit('user-left', socket.userId);
-      
-      // Clean up empty rooms
-      if (Object.keys(rooms[socket.roomId].participants).length === 0) {
-        delete rooms[socket.roomId];
-        console.log(`Room ${socket.roomId} cleaned up (no participants)`);
+    const { roomId, userId } = socket;
+    if (roomId && userId && rooms[roomId]) {
+      delete rooms[roomId].participants[userId];
+      console.log(`⚠️ ${userId} left room ${roomId} (Reason: ${reason})`);
+
+      socket.to(roomId).emit('user-left', userId);
+
+      if (Object.keys(rooms[roomId].participants).length === 0) {
+        delete rooms[roomId];
+        console.log(`🧹 Room ${roomId} deleted (empty)`);
       }
     }
   });
 
   // Heartbeat
-  const interval = setInterval(() => {
-    if (!socket.connected) {
-      clearInterval(interval);
-      return;
-    }
+  const heartbeat = setInterval(() => {
+    if (!socket.connected) return clearInterval(heartbeat);
     socket.emit('ping');
   }, 30000);
 
   socket.on('pong', () => {
-    console.log(`Heartbeat received from ${socket.userId} in room ${socket.roomId}`);
+    console.log(`💓 Pong from ${socket.userId || 'unknown'} in room ${socket.roomId || 'none'}`);
   });
 });
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server listening on port ${PORT}`);
 });
