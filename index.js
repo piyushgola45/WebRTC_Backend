@@ -6,8 +6,9 @@ const cors = require('cors');
 const app = express();
 const server = http.createServer(app);
 
+// Secure CORS configuration
 app.use(cors({
-  origin: '*', // Change to specific domain in production
+  origin: '*', // Change for production
   methods: ['GET', 'POST']
 }));
 
@@ -17,112 +18,103 @@ const io = socketIo(server, {
     methods: ['GET', 'POST']
   },
   connectionStateRecovery: {
-    maxDisconnectionDuration: 120000,
+    maxDisconnectionDuration: 120000, // 2 minutes
     skipMiddlewares: true
   }
 });
 
-const rooms = {};
+// Store connected users
+const users = {};
 
 io.on('connection', (socket) => {
-  console.log(`🔌 User connected: ${socket.id}`);
+  console.log(`User connected: ${socket.id}`);
 
-  socket.on('join-room', (roomId, userId) => {
-    if (typeof roomId !== 'string' || typeof userId !== 'string') {
-      console.error('❌ Invalid roomId or userId');
+  // When a user joins
+  socket.on('join', (userId) => {
+    if (!userId || typeof userId !== 'string') {
+      console.error('Invalid userId:', userId);
       return socket.disconnect(true);
     }
 
-    socket.join(roomId);
-    socket.roomId = roomId;
+    // Handle duplicate connections
+    if (users[userId]) {
+      console.log(`Displacing previous connection for ${userId}`);
+      io.to(users[userId]).emit('duplicate-connection');
+      delete users[userId];
+    }
+
+    users[userId] = socket.id;
     socket.userId = userId;
-
-    if (!rooms[roomId]) {
-      rooms[roomId] = {
-        participants: {},
-        messages: []
-      };
-    }
-
-    rooms[roomId].participants[userId] = socket.id;
-
-    console.log(`✅ ${userId} joined room ${roomId}. Total: ${Object.keys(rooms[roomId].participants).length}`);
-
-    socket.to(roomId).emit('user-joined', userId);
-
-    socket.emit('room-info', {
-      participants: Object.keys(rooms[roomId].participants).filter(id => id !== userId),
-      messages: rooms[roomId].messages
-    });
-  });
-
-  socket.on('signal', ({ targetUserId, signal }) => {
+    console.log(`User ${userId} joined. Active users: ${Object.keys(users).length}`);
+    socket.on('message', (data) => {
     try {
-      const { roomId, userId } = socket;
-      if (!roomId || !targetUserId || !signal) throw new Error('Missing data');
+      if (!data?.target || !data?.text || !data?.sender) {
+        throw new Error('Invalid message data');
+      }
 
-      const room = rooms[roomId];
-      if (!room) throw new Error('Room not found');
+      const targetSocketId = users[data.target];
+      if (!targetSocketId) {
+        throw new Error(`Target user ${data.target} not found`);
+      }
 
-      const targetSocketId = room.participants[targetUserId];
-      if (!targetSocketId) throw new Error('Target not in room');
-
-      io.to(targetSocketId).emit('signal', { senderId: userId, signal });
-    } catch (err) {
-      console.error('❌ Signal error:', err.message);
-      socket.emit('signal-error', err.message);
-    }
-  });
-
-  socket.on('message', (text) => {
-    try {
-      const { roomId, userId } = socket;
-      if (!roomId || typeof text !== 'string' || !text.trim()) throw new Error('Invalid message');
-
-      const room = rooms[roomId];
-      if (!room) throw new Error('Room not found');
-
-      const message = {
-        senderId: userId,
-        text: text.trim(),
+      io.to(targetSocketId).emit('message', {
+        sender: data.sender,
+        text: data.text,
         timestamp: new Date().toISOString()
-      };
-
-      room.messages.push(message);
-      io.to(roomId).emit('message', message);
+      });
     } catch (err) {
-      console.error('❌ Message error:', err.message);
+      console.error('Message error:', err.message);
       socket.emit('message-error', err.message);
     }
   });
+  });
 
-  socket.on('disconnect', (reason) => {
-    const { roomId, userId } = socket;
-    if (roomId && userId && rooms[roomId]) {
-      delete rooms[roomId].participants[userId];
-      console.log(`⚠️ ${userId} left room ${roomId} (Reason: ${reason})`);
-
-      socket.to(roomId).emit('user-left', userId);
-
-      if (Object.keys(rooms[roomId].participants).length === 0) {
-        delete rooms[roomId];
-        console.log(`🧹 Room ${roomId} deleted (empty)`);
+  // Relay signaling data
+  socket.on('signal', (data) => {
+    try {
+      if (!data?.target || !data?.signal) {
+        throw new Error('Invalid signal data');
       }
+
+      const targetSocketId = users[data.target];
+      if (!targetSocketId) {
+        throw new Error(`Target user ${data.target} not found`);
+      }
+
+      io.to(targetSocketId).emit('signal', {
+        sender: socket.userId,
+        signal: data.signal
+      });
+    } catch (err) {
+      console.error('Signaling error:', err.message);
+      socket.emit('signal-error', err.message);
+    }
+  });
+  console.log(users);
+  // Handle disconnection
+  socket.on('disconnect', (reason) => {
+    if (socket.userId) {
+      delete users[socket.userId];
+      console.log(`User ${socket.userId} disconnected. Reason: ${reason}`);
+      io.emit('user-disconnected', socket.userId);
     }
   });
 
   // Heartbeat
-  const heartbeat = setInterval(() => {
-    if (!socket.connected) return clearInterval(heartbeat);
+  const interval = setInterval(() => {
+    if (!socket.connected) {
+      clearInterval(interval);
+      return;
+    }
     socket.emit('ping');
   }, 30000);
 
   socket.on('pong', () => {
-    console.log(`💓 Pong from ${socket.userId || 'unknown'} in room ${socket.roomId || 'none'}`);
+    console.log(`Heartbeat received from ${socket.userId}`);
   });
 });
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
